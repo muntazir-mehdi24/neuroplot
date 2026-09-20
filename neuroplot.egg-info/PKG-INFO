@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: neuroplot
-Version: 0.1.1
+Version: 0.1.2
 Summary: A lightweight, modular real-time visualization and diagnostics library for PyTorch.
 Description-Content-Type: text/markdown
 Requires-Dist: torch
