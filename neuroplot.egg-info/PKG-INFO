@@ -1,0 +1,78 @@
+Metadata-Version: 2.4
+Name: neuroplot
+Version: 0.1.1
+Summary: A lightweight, modular real-time visualization and diagnostics library for PyTorch.
+Description-Content-Type: text/markdown
+Requires-Dist: torch
+Requires-Dist: matplotlib
+Requires-Dist: numpy
+Requires-Dist: imageio
+
+# NeuroPlot 🧠📊
+A lightweight, modular real-time training telemetry and visualization library for PyTorch.
+
+NeuroPlot provides live, multi-panel diagnostic monitoring during your training loops—allowing you to track decision boundaries, latent space representations, loss curves, and accuracy metrics seamlessly.
+
+## Features
+- Live Multi-Panel Dashboard: Watch decision boundaries and latent spaces evolve in real-time alongside loss and accuracy curves.
+- Automatic GIF Compilation: Automatically capture training progress and compile it into a clean GIF.
+- Best-Model Checkpointing: Automatically track and save the best-performing model weights.
+
+## Installation
+pip install neuroplot
+
+## Quick Start Usage Guide
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import sklearn.datasets as datasets
+from neuroplot import LiveVisualizer
+
+# 1. Prepare data and model
+X, y = datasets.make_moons(n_samples=100, noise=0.1)
+x = torch.tensor(X, dtype=torch.float32)
+y = torch.tensor(y, dtype=torch.float32).view(-1, 1)
+
+class Moon_MLP(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.fc1 = nn.Linear(2, 8)
+        self.fc2 = nn.Linear(8, 8)
+        self.fc3 = nn.Linear(8, 1)
+
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = torch.sigmoid(self.fc3(x))
+        return x
+
+model = Moon_MLP()
+optimizer = optim.Adam(model.parameters(), lr=0.01)
+
+# 2. Initialize NeuroPlot
+viz = LiveVisualizer(
+    plots=["boundary", "latent", "loss", "accuracy"], 
+    model=model, 
+    data=(x, y), 
+    update_every=50,
+    save_gif=True,
+    gif_name="neuroplot_demo.gif",
+    save_best_model=True,
+    checkpoint_path="best_model.pth"
+)
+
+# 3. Training Loop
+for epoch in range(1000):
+    y_pred = model(x)
+    loss = nn.BCELoss()(y_pred, y)
+    
+    preds = (y_pred >= 0.5).float()
+    acc = (preds == y).float().mean().item()
+
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+    viz.step(epoch, loss=loss.item(), accuracy=acc)
+
+viz.close()
