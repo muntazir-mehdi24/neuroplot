@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.1.2] - 2026-09-20
+## [0.1.3] - 2026-09-20
 - **Added:** Full standalone support for interactive display window rendering (`plt.show(block=False)`) alongside background GIF recording.
 - **Added:** Robust backend detection ensuring independent control of `save_gif` and interactive desktop GUI windows.
 - **Improved:** Backward compatibility layer for legacy scalar float loss inputs (`viz.step(epoch, loss=val)`).
