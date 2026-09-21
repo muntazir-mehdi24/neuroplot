@@ -1,24 +1,10 @@
 import torch
 import torch.nn as nn
 import matplotlib
-import sys
-import os
-
-# Force a robust interactive backend for local Windows execution
-if sys.platform != 'darwin' and not os.environ.get('DISPLAY'):
-    pass # headless
-else:
-    try:
-        matplotlib.use('TkAgg')
-    except Exception:
-        try:
-            matplotlib.use('QtAgg')
-        except Exception:
-            pass
-
-import matplotlib.pyplot as plt
 import numpy as np
 import tempfile
+import sys
+import os
 
 try:
     import imageio
@@ -31,6 +17,30 @@ class LiveVisualizer:
                  save_gif=False, gif_name="training_progress.gif",
                  save_best_model=False, checkpoint_path="best_model.pth",
                  smooth_alpha=0.1, custom_plot_fn=None):
+        
+        # Bug #2 Fix: Robust cross-platform headless detection with Tcl/Tk and GUI error fallback
+        if not matplotlib.is_interactive():
+            current_backend = matplotlib.get_backend().lower()
+            if current_backend in ['agg', 'pdf', 'ps', 'svg', 'cairo']:
+                headless = True
+                for candidate in ['TkAgg', 'QtAgg', 'WXAgg']:
+                    try:
+                        matplotlib.use(candidate)
+                        import matplotlib.pyplot as plt
+                        fig_test = plt.figure()
+                        plt.close(fig_test)
+                        headless = False
+                        break
+                    except Exception:
+                        continue
+                
+                if headless:
+                    matplotlib.use('Agg')
+
+        # Bug #1 Fix: Lazy import of pyplot to respect backend selection above
+        import matplotlib.pyplot as plt
+        self._plt = plt
+
         self.plots = plots
         self.model = model
         self.data = data
@@ -41,9 +51,32 @@ class LiveVisualizer:
         self.checkpoint_path = checkpoint_path
         self.smooth_alpha = smooth_alpha
         self.custom_plot_fn = custom_plot_fn
+
+        # Bug #3 Fix: Comprehensive input validation including nn.Linear check for latent space
+        for plot_type in self.plots:
+            if plot_type in ["boundary", "latent", "regression_fit"]:
+                if self.model is None:
+                    raise ValueError(f"'{plot_type}' plot requires a model to be passed to LiveVisualizer.")
+                if self.data is None:
+                    raise ValueError(f"'{plot_type}' plot requires data=(X, y) to be passed to LiveVisualizer.")
+            
+            if plot_type == "boundary":
+                X, _ = self.data
+                if X.ndim != 2 or X.shape[1] != 2:
+                    raise ValueError(f"'boundary' requires 2D input data with 2 features, got shape {tuple(X.shape)}")
+            
+            if plot_type == "latent":
+                has_linear = any(isinstance(m, nn.Linear) for _, m in self.model.named_modules())
+                if not has_linear:
+                    raise ValueError("'latent' plot requires the model to contain at least one nn.Linear layer for activation extraction.")
+            
+            if plot_type == "grad_norm" and self.model is None:
+                raise ValueError("'grad_norm' plot requires a model to be passed to LiveVisualizer.")
         
-        self.history = {p: [] for p in plots if p not in ["boundary", "gradients", "latent", "grad_norm", "regression_fit"]}
-        self.smoothed_history = {p: [] for p in plots if p not in ["boundary", "gradients", "latent", "grad_norm", "regression_fit"]}
+        # Exclude diagnostics and custom from history tracking so hooks execute correctly
+        excluded_plots = ["boundary", "gradients", "latent", "grad_norm", "regression_fit", "custom"]
+        self.history = {p: [] for p in plots if p not in excluded_plots}
+        self.smoothed_history = {p: [] for p in plots if p not in excluded_plots}
         self.custom_plots = {}
         
         self.best_loss = float('inf')
@@ -64,8 +97,15 @@ class LiveVisualizer:
         cols = min(num_plots, 3)
         rows = (num_plots + cols - 1) // cols
         
-        plt.ion()
-        self.fig, self.axes = plt.subplots(rows, cols, figsize=(5 * cols, 4 * rows))
+        try:
+            self._plt.ion()
+            self.fig, self.axes = self._plt.subplots(rows, cols, figsize=(5 * cols, 4 * rows))
+        except Exception:
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            self._plt = plt
+            self._plt.ion()
+            self.fig, self.axes = self._plt.subplots(rows, cols, figsize=(5 * cols, 4 * rows))
         
         if num_plots == 1:
             self.axes = [self.axes]
@@ -75,8 +115,16 @@ class LiveVisualizer:
         for j in range(num_plots, len(self.axes)):
             self.fig.delaxes(self.axes[j])
 
-        plt.show(block=False)
-        self.fig.canvas.flush_events()
+        # Trim axes list to match exactly the number of active plots
+        self.axes = self.axes[:num_plots]
+
+        # Only invoke interactive show when the figure manager supports it.
+        if self._has_interactive_canvas():
+            try:
+                self.fig.canvas.manager.show()
+                self.fig.canvas.flush_events()
+            except Exception:
+                pass
 
         if "boundary" in self.plots and self.data is not None:
             X, _ = self.data
@@ -85,6 +133,9 @@ class LiveVisualizer:
             xx, yy = torch.meshgrid(torch.linspace(x_min, x_max, 100), torch.linspace(y_min, y_max, 100), indexing='ij')
             self.grid_tensor = torch.stack([xx.ravel(), yy.ravel()], dim=1)
             self.xx, self.yy = xx, yy
+
+    def _has_interactive_canvas(self):
+        return getattr(type(self.fig.canvas), "required_interactive_framework", None) is not None
 
     def _extract_hidden_activations(self, x):
         if self.model is None:
@@ -169,8 +220,8 @@ class LiveVisualizer:
                     with torch.no_grad():
                         Z = self.model(self.grid_tensor).detach().cpu().numpy()
                     self.model.train()
-                    ax.contourf(self.xx, self.yy, Z.reshape(self.xx.shape), levels=50, cmap=plt.cm.Spectral, alpha=0.7)
-                ax.scatter(X[:, 0], X[:, 1], c=y.squeeze(), cmap=plt.cm.Spectral, edgecolors='k')
+                    ax.contourf(self.xx, self.yy, Z.reshape(self.xx.shape), levels=50, cmap=self._plt.cm.Spectral, alpha=0.7)
+                ax.scatter(X[:, 0], X[:, 1], c=y.squeeze(), cmap=self._plt.cm.Spectral, edgecolors='k')
                 ax.set_title(f"Decision Boundary (Epoch {epoch})")
 
             elif plot_type == "latent" and self.model is not None and self.data is not None:
@@ -178,7 +229,7 @@ class LiveVisualizer:
                 h = self._extract_hidden_activations(X)
                 if h is not None:
                     h_np = h.cpu().numpy()
-                    ax.scatter(h_np[:, 0], h_np[:, 1] if h_np.shape[1] > 1 else np.zeros_like(h_np[:, 0]), c=y.squeeze(), cmap=plt.cm.Spectral, edgecolors='k')
+                    ax.scatter(h_np[:, 0], h_np[:, 1] if h_np.shape[1] > 1 else np.zeros_like(h_np[:, 0]), c=y.squeeze(), cmap=self._plt.cm.Spectral, edgecolors='k')
                     ax.set_title(f"Latent Space (Epoch {epoch})")
 
             elif plot_type == "grad_norm" and self.model is not None:
@@ -210,10 +261,14 @@ class LiveVisualizer:
             elif self.custom_plot_fn is not None and plot_type == "custom":
                 self.custom_plot_fn(ax, self.model, self.data)
 
-        plt.tight_layout()
-        self.fig.canvas.draw()
-        self.fig.canvas.flush_events()
-        plt.pause(0.001)
+        try:
+            self._plt.tight_layout()
+            self.fig.canvas.draw()
+            self.fig.canvas.flush_events()
+            if self._has_interactive_canvas():
+                self.fig.canvas.start_event_loop(0.001)
+        except Exception:
+            pass
 
         if self.save_gif and IMAGEIO_AVAILABLE:
             frame_path = os.path.join(self.temp_dir.name, f"frame_{self.frame_count:04d}.png")
@@ -222,7 +277,10 @@ class LiveVisualizer:
             self.frame_count += 1
 
     def close(self):
-        plt.ioff()
+        try:
+            self._plt.ioff()
+        except Exception:
+            pass
         if self.save_best_model:
             print(f"Best model saved to: {os.path.abspath(self.checkpoint_path)}")
         if self.save_gif and IMAGEIO_AVAILABLE and self.frames:
